@@ -1,0 +1,45 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+import os
+
+# file path load
+background_path = r"C:/Users/twins/Downloads/dg.jpg"
+output_dir = r"C:/Users/twins/Downloads"
+os.makedirs(output_dir, exist_ok=True)
+
+# load 정사영상
+bg = mpimg.imread(background_path)
+
+# scenario data
+def synthetic_field(seed, shape):
+    rng = np.random.default_rng(seed)
+    base = rng.random(shape)
+    for _ in range(6):
+        base = (base + np.roll(base, 1, 0) + np.roll(base, -1, 0)
+                      + np.roll(base, 1, 1) + np.roll(base, -1, 1)) / 5
+    return (base - base.min()) / (base.max() - base.min())
+
+shape = (bg.shape[0], bg.shape[1])
+flood   = synthetic_field(1, shape)
+heat    = synthetic_field(2, shape)
+drought = synthetic_field(3, shape)
+
+# save function (overlay)
+def overlay_map(data, cmap, title, filename, alpha=0.35):
+    plt.figure(figsize=(8, 8))
+    plt.axis('off')
+    plt.imshow(bg, cmap='gray')
+    plt.imshow(data, cmap=cmap, alpha=alpha)
+    plt.title(title, fontsize=14, weight='bold')
+    save_path = os.path.join(output_dir, filename)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"{save_path} 저장 완료")
+
+# plot by scenario
+overlay_map(flood,   "Blues_r",   "Flood Scenario (Rain +40%)",   "overlay_flood.png")
+overlay_map(heat,    "inferno_r", "Heatwave Scenario (Avg +3°C)", "overlay_heat.png")
+overlay_map(drought, "YlGnBu_r",  "Drought Scenario (-30% Rain)", "overlay_drought.png")
+
+print("세 가지 오버레이 이미지 생성 완료")
