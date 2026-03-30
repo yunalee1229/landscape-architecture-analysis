@@ -1,0 +1,109 @@
+import numpy as np
+import rasterio
+from rasterio import features
+from rasterio.enums import Resampling
+from rasterio.features import shapes
+import geopandas as gpd
+from shapely.geometry import shape
+from scipy.ndimage import label
+
+# -----------------------------
+# path load
+# -----------------------------
+DEM_PATH = "C:/Users/twins/OneDrive/문서/바탕 화면/졸작/site_dem.tif"   # DEM GeoTIFF
+OCEAN_MASK_PATH = "C:/Users/twins/OneDrive/문서/바탕 화면/졸작/oceanmask.tif"  # 바다(곰소만) 마스크: 바다는 1, 나머지 0 (없으면 아래 참고)
+OUT_PREFIX = "C:/Users/twins/OneDrive/문서/바탕 화면/졸작/demanalysis_slr"
+
+# water level
+BASE_WATER_LEVEL = 0.0  
+SCENARIOS = {
+    "10yr": 0.2,
+    "30yr": 0.4,
+    "50yr": 0.7
+}
+
+# -----------------------------
+# save raster
+# -----------------------------
+def write_raster(path, arr, profile, dtype):
+    prof = profile.copy()
+    prof.update(dtype=dtype, count=1, compress="lzw", nodata=None)
+    with rasterio.open(path, "w", **prof) as dst:
+        dst.write(arr.astype(dtype), 1)
+
+# -----------------------------
+# 1) DEM load
+# -----------------------------
+with rasterio.open(DEM_PATH) as dem_src:
+    dem = dem_src.read(1, masked=True)
+    dem_profile = dem_src.profile
+    transform = dem_src.transform
+    crs = dem_src.crs
+    pixel_area = abs(dem_src.res[0] * dem_src.res[1])  # (m * m) if projected CRS
+
+# -----------------------------
+# 2) ocean mask
+#    
+# -----------------------------
+with rasterio.open(OCEAN_MASK_PATH) as ocean_src:
+    ocean = ocean_src.read(1, masked=True).filled(0).astype(np.uint8)
+
+# if
+if ocean.shape != dem.shape:
+    raise ValueError("Ocean mask와 DEM의 크기/정렬이 다릅니다. 같은 격자로 맞춰주세요(QGIS 추천).")
+
+# -----------------------------
+# 3) scenario flood + filtering
+# -----------------------------
+# 8 direction
+structure = np.array([[1,1,1],
+                      [1,1,1],
+                      [1,1,1]], dtype=np.uint8)
+
+results = []
+
+for name, dh in SCENARIOS.items():
+    water_level = BASE_WATER_LEVEL + dh
+
+    # (a) basic flood
+    inund = (~dem.mask) & (dem.filled(np.nan) <= water_level)
+    inund = np.nan_to_num(inund, nan=False).astype(np.uint8)
+
+    # (b) ocean-connected filter:
+    labeled, n = label(inund, structure=structure)
+
+    # overlay label
+    ocean_labels = np.unique(labeled[(ocean == 1) & (labeled > 0)])
+    connected = np.isin(labeled, ocean_labels).astype(np.uint8)
+
+    # (c) depth car.
+    depth = np.zeros_like(dem.filled(0), dtype=np.float32)
+    d = (water_level - dem.filled(np.nan)).astype(np.float32)
+    d = np.nan_to_num(d, nan=0.0)
+    depth[connected == 1] = d[connected == 1]
+    depth[depth < 0] = 0.0
+
+    # (d) save
+    out_inund = f"{OUT_PREFIX}_{name}_extent.tif"
+    out_depth = f"{OUT_PREFIX}_{name}_depth.tif"
+    write_raster(out_inund, connected, dem_profile, "uint8")
+    write_raster(out_depth, depth, dem_profile, "float32")
+
+    # (e) area(㎡) 
+    inund_area_m2 = connected.sum() * pixel_area
+    results.append((name, water_level, inund_area_m2))
+
+    # (f) extent polygon
+    geoms = []
+    for geom, val in shapes(connected, mask=(connected == 1), transform=transform):
+        if val == 1:
+            geoms.append(shape(geom))
+    if geoms:
+        gdf = gpd.GeoDataFrame({"scenario":[name]*len(geoms)}, geometry=geoms, crs=crs)
+        # dissolve
+        gdf = gdf.dissolve(by="scenario").reset_index()
+        gdf.to_file(f"{OUT_PREFIX}_{name}_extent.geojson", driver="GeoJSON")
+
+print("=== 침수 면적 결과(㎡) ===")
+for name, wl, area in results:
+    print(f"{name}: water_level={wl:.2f} m, area={area:,.0f} m²")
