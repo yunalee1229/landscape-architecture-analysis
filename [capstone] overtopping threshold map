@@ -1,0 +1,74 @@
+# 0. library
+# ---------------------------------
+import rasterio
+import numpy as np
+import matplotlib.pyplot as plt
+from heapq import heappush, heappop
+
+# ---------------------------------
+# 1. path
+# ---------------------------------
+DEM_PATH = "C:/Users/twins/OneDrive/문서/바탕 화면/졸작/site_dem.tif"
+OCEAN_MASK_PATH = "C:/Users/twins/OneDrive/문서/바탕 화면/졸작/oceanmask3.tif"
+
+# ---------------------------------
+# 2. load data
+# ---------------------------------
+dem = rasterio.open(DEM_PATH)
+dem_array = dem.read(1)
+
+mask = rasterio.open(OCEAN_MASK_PATH)
+ocean_array = mask.read(1)
+
+# nodata 처리
+dem_array = np.where(dem_array == dem.nodata, np.nan, dem_array)
+
+rows, cols = dem_array.shape
+
+# ---------------------------------
+# 3. critical water level 계산
+# ---------------------------------
+critical = np.full_like(dem_array, np.inf)
+
+pq = []
+
+# 바다에서 시작
+for r in range(rows):
+    for c in range(cols):
+        if ocean_array[r, c] == 1:
+            critical[r, c] = dem_array[r, c]
+            heappush(pq, (critical[r, c], r, c))
+
+# 8방향 이동
+dirs = [(-1,0),(1,0),(0,-1),(0,1),
+        (-1,-1),(-1,1),(1,-1),(1,1)]
+
+while pq:
+    wl, r, c = heappop(pq)
+
+    for dr, dc in dirs:
+        nr, nc = r + dr, c + dc
+
+        if 0 <= nr < rows and 0 <= nc < cols:
+            if np.isnan(dem_array[nr, nc]):
+                continue
+
+            new_wl = max(wl, dem_array[nr, nc])
+
+            if new_wl < critical[nr, nc]:
+                critical[nr, nc] = new_wl
+                heappush(pq, (new_wl, nr, nc))
+
+# ---------------------------------
+# 4. visualization (단일 결과)
+# ---------------------------------
+plt.figure(figsize=(8, 8))
+
+im = plt.imshow(critical, cmap="turbo")
+
+plt.title("Overtopping Threshold Map (Connectivity-based)", fontsize=14)
+plt.colorbar(im, label="Critical water level to reach (m)")
+
+plt.axis("off")
+plt.tight_layout()
+plt.show()
