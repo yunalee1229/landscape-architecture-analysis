@@ -1,0 +1,188 @@
+
+# -------------
+# 1. load data
+# -------------
+
+library(tidyverse)
+getwd()
+
+green <- read.csv("C:/R/부산광역시_녹지 현황_20241231.csv", fileEncoding = "CP949")
+
+# -------------
+# 2. data structure
+# -------------
+
+head(green)
+str(green)
+names(green)
+
+# -------------
+# 3. 전처리
+# -------------
+
+# remove blank
+green$구분2 <- trimws(green$구분2)
+
+# -------------
+# 4. data pivot
+# -------------
+
+green_long <- green %>%
+  pivot_longer(
+    cols = -c(구분, 구분2),
+    names_to = "구",
+    values_to = "값"
+  )
+
+# -------------
+# 5. type change
+# -------------
+
+green_long$값 <- as.numeric(green_long$값)
+green_long$구 <- as.factor(green_long$구)
+green_long$구분 <- as.factor(green_long$구분)
+green_long$구분2 <- as.factor(green_long$구분2)
+
+# -------------
+# 6. analysis 1: 구별 총 녹지 면적
+# -------------
+
+green_area <- green_long %>%
+  filter(구분2 == "면적")
+
+green_summary <- green_area %>%
+  group_by(구) %>%
+  summarise(total_area = sum(값, na.rm = TRUE))
+
+green_summary
+
+# -------------
+# 7. 시각화 1: 구별 총 녹지 면적
+# -------------
+
+# 기본 색상 사용 가능
+ggplot(green_summary, aes(x = reorder(구, -total_area), y = total_area)) +
+  geom_col(fill = "pink") +
+  coord_flip() +
+  labs(
+    title = "부산시 구별 총 녹지 면적",
+    x = "구",
+    y = "면적"
+  ) +
+  theme_minimal()
+
+# -------------
+# 8. analysis 2: 녹지 유형별 비교
+# -------------
+
+green_type <- green_long %>%
+  filter(구분2 == "면적") %>%
+  group_by(구, 구분) %>%
+  summarise(area = sum(값, na.rm = TRUE))
+
+# -------------
+# 9. 시각화 2: 녹지 유형별 비교교
+# -------------
+
+ggplot(green_type, aes(x = 구, y = area, fill = 구분)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "구별 녹지 유형 비교",
+    x = "구",
+    y = "면적"
+  ) +
+  theme_minimal()
+
+# -------------
+# 10. 추가 시각화: box plot
+# -------------
+
+ggplot(green_area, aes(x = 구, y = 값)) +
+  geom_boxplot(fill = "blue") +
+  coord_flip() +
+  labs(
+    title = "구별 녹지 면적 분포",
+    x = "구",
+    y = "면적"
+  )
+
+# -------------
+# 11. 추가 분석: 개소 수 비교교
+# -------------
+
+green_count <- green_long %>%
+  filter(구분2 == "개소") %>%
+  group_by(구) %>%
+  summarise(total_count = sum(값, na.rm = TRUE))
+
+ggplot(green_count, aes(x = reorder(구, -total_count), y = total_count)) +
+  geom_col(fill = "yellow") +
+  coord_flip() +
+  labs(
+    title = "구별 녹지 개소 수",
+    x = "구",
+    y = "개소 수"
+  )
+
+# -------------
+# 12. 추가 실습
+# -------------
+
+# 유형별 비교
+# colorbrewer palette
+ggplot(green_type, aes(x = 구, y = area, fill = 구분)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  scale_fill_brewer(palette = "Set1") +
+  labs(title = "구별 녹지 유형 비교") +
+  theme_minimal()
+
+# 특정 유형 (화단)
+flowerbed <- green_long %>%
+  filter (구분2 == "면적", 구분 == "화단") %>%
+  group_by(구) %>%
+  summarise(area = sum(값, na.rm = TRUE))
+
+ggplot(flowerbed, aes(x = reorder(구, -area), y = area)) +
+  geom_col(fill = "gray") +
+  coord_flip() +
+  labs(title = "구별 화단 면적") +
+  theme_minimal()
+
+# 큰 녹지
+large_green <- green_area %>%
+  filter(값 <= 50000)
+
+ggplot(large_green, aes(x = 구, y = 값, fill = 구분)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_brewer(palette = "Pastel1") +
+  labs(title = "대규모 녹지") +
+  theme_minimal()
+
+# 작은 녹지
+small_green <- green_area %>%
+  filter(값 <= 5000)
+
+# 파스텔 계열 팔레트
+ggplot(small_green, aes(x = 구, y = 값, fill = 구분)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_brewer(palette = "Accent") +
+  labs(title = "소규모 녹지") +
+  theme_minimal()
+
+# -------------
+# 13. wide 형태 재구성
+# -------------
+
+green_wide_final <- green_long %>%
+  unite(type, 구분, 구분2, sep = "_") %>% # 가로수_노선 형태 생성
+  pivot_wider(
+    names_from = type,
+    values_from = 값
+  )
+
+# 결과 확인
+head(green_wide_final)
