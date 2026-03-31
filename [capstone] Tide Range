@@ -1,0 +1,167 @@
+# ---------------------------------
+# 0. library
+# ---------------------------------
+import rasterio
+import numpy as np
+import geopandas as gpd
+import pandas as pd
+import matplotlib.pyplot as plt
+from rasterio.features import shapes
+from shapely.geometry import shape
+
+# ---------------------------------
+# 1. path setting
+# ---------------------------------
+DEM_PATH = "C:/Users/twins/OneDrive/문서/바탕 화면/졸작/site_dem.tif"
+OCEAN_MASK_PATH = "C:/Users/twins/OneDrive/문서/바탕 화면/졸작/oceanmask3.tif"
+
+OUTPUT_SHP = "coastal_analysis.shp"
+OUTPUT_PNG = "coastal_analysis.png"
+OUTPUT_CSV = "coastal_matrix.csv"   
+
+# ---------------------------------
+# 2. oceanmask → coastline
+# ---------------------------------
+mask = rasterio.open(OCEAN_MASK_PATH)
+mask_array = mask.read(1)
+
+binary = (mask_array == 1).astype(np.uint8)
+
+results = (
+    {"properties": {"value": v}, "geometry": s}
+    for s, v in shapes(binary, transform=mask.transform)
+    if v == 1
+)
+
+ocean_poly = gpd.GeoDataFrame.from_features(list(results), crs=mask.crs)
+
+coastline = ocean_poly.boundary
+coast_gdf = gpd.GeoDataFrame(geometry=coastline, crs=mask.crs)
+
+coast_gdf["geometry"] = coast_gdf.simplify(10)
+
+# ---------------------------------
+# 3. buffer by distance
+# ---------------------------------
+buffers = {
+    "intertidal": 500,
+    "coastal": 1000,
+    "hinterland": 5000
+}
+
+buffer_gdfs = []
+prev = 0
+
+for name, dist in buffers.items():
+    outer = coast_gdf.buffer(dist)
+    inner = coast_gdf.buffer(prev)
+
+    zone_geom = outer.difference(inner)
+
+    gdf = gpd.GeoDataFrame(
+        {"zone": [name] * len(zone_geom)},
+        geometry=zone_geom,
+        crs=coast_gdf.crs
+    )
+
+    buffer_gdfs.append(gdf)
+    prev = dist
+
+buffer_all = gpd.GeoDataFrame(
+    pd.concat(buffer_gdfs, ignore_index=True)
+)
+
+# ---------------------------------
+# 4. DEM classification
+# ---------------------------------
+dem = rasterio.open(DEM_PATH)
+dem_array = dem.read(1)
+
+depth_class = np.zeros_like(dem_array)
+
+depth_class[(dem_array >= 0) & (dem_array < 2)] = 1
+depth_class[(dem_array >= 2) & (dem_array < 5)] = 2
+depth_class[(dem_array >= 5)] = 3
+
+# ---------------------------------
+# 5. Raster → Polygon
+# ---------------------------------
+mask_valid = dem_array != dem.nodata
+
+results = (
+    {"properties": {"depth": v}, "geometry": s}
+    for s, v in shapes(
+        depth_class,
+        mask=mask_valid,
+        transform=dem.transform
+    )
+)
+
+depth_gdf = gpd.GeoDataFrame.from_features(
+    list(results),
+    crs=dem.crs
+)
+
+# ---------------------------------
+# 6. CRS 
+# ---------------------------------
+buffer_all = buffer_all.to_crs(depth_gdf.crs)
+
+# ---------------------------------
+# 7. overlay (depth + distance)
+# ---------------------------------
+final = gpd.overlay(depth_gdf, buffer_all, how="intersection")
+
+final = final[final.geometry.area > 5000]
+
+final = final.dissolve(by=["zone", "depth"]).reset_index()
+
+final["geometry"] = final.buffer(0)
+
+# ---------------------------------
+# 8. shp 
+# ---------------------------------
+final.to_file(OUTPUT_SHP)
+
+# ---------------------------------
+# 9. matrix
+# ---------------------------------
+# area
+final["area"] = final.geometry.area
+
+# pivot table (zone × depth)
+matrix = final.pivot_table(
+    index="zone",
+    columns="depth",
+    values="area",
+    aggfunc="sum",
+    fill_value=0
+)
+
+# csv
+matrix.to_csv(OUTPUT_CSV)
+
+print("\n=== Coastal Matrix (면적 기반) ===")
+print(matrix)
+
+# ---------------------------------
+# 10. visualization
+# ---------------------------------
+fig, ax = plt.subplots(figsize=(10, 10))
+
+final.plot(
+    column="depth",
+    cmap="YlGnBu_r",
+    linewidth=0.2,
+    edgecolor="black",
+    legend=True,
+    ax=ax
+)
+
+ax.set_title("Coastal Analysis (Depth + Distance)", fontsize=14)
+ax.axis("off")
+
+plt.savefig(OUTPUT_PNG, dpi=300, bbox_inches="tight")
+plt.show()
+
+print("완료: shp + png + matrix(csv) 생성")
