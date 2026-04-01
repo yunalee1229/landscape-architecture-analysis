@@ -1,0 +1,199 @@
+import numpy as np
+import rasterio
+from rasterio.features import shapes
+import geopandas as gpd
+from shapely.geometry import shape
+from scipy.ndimage import label
+import matplotlib.pyplot as plt
+
+# -----------------------------
+# path setting
+# -----------------------------
+DEM_PATH = "C:/Users/twins/OneDrive/문서/바탕 화면/26-1/asla/sin_site4.tif"
+OCEAN_MASK_PATH = "C:/Users/twins/OneDrive/문서/바탕 화면/26-1/asla/sin_ocean13.tif"
+OUT_PREFIX = "C:/Users/twins/OneDrive/문서/바탕 화면/26-1/asla/sinhang_slr_result"
+
+# -----------------------------
+# water level setting
+# -----------------------------
+BASE_WATER_LEVEL = 1.2
+
+SCENARIOS = {
+    "100yr": 0.5,
+    "150yr": 0.8,
+    "200yr": 1.2
+}
+
+MAX_DEPTH = 5.0
+
+# -----------------------------
+# raster save function
+# -----------------------------
+def write_raster(path, arr, profile, dtype):
+    prof = profile.copy()
+    prof.update(dtype=dtype, count=1, compress="lzw", nodata=None)
+    with rasterio.open(path, "w", **prof) as dst:
+        dst.write(arr.astype(dtype), 1)
+
+# -----------------------------
+# PNG + label setting function
+# -----------------------------
+def save_png(arr, title, path, cmap="Blues", vmin=None, vmax=None, label=""):
+    plt.figure(figsize=(6,6))
+    
+    im = plt.imshow(arr, cmap=cmap, vmin=vmin, vmax=vmax)
+    
+    plt.title(title)
+    plt.axis("off")
+    
+    cbar = plt.colorbar(im, fraction=0.036, pad=0.04)
+    cbar.set_label(label)
+    
+    plt.tight_layout()
+    plt.savefig(path, dpi=300)
+    plt.close()
+
+# -----------------------------
+# DEM load
+# -----------------------------
+with rasterio.open(DEM_PATH) as dem_src:
+    dem = dem_src.read(1)
+    dem = np.where(dem == dem_src.nodata, np.nan, dem)
+    dem_profile = dem_src.profile
+    transform = dem_src.transform
+    crs = dem_src.crs
+    pixel_area = abs(dem_src.res[0] * dem_src.res[1])
+
+# -----------------------------
+# Ocean mask load
+# -----------------------------
+with rasterio.open(OCEAN_MASK_PATH) as ocean_src:
+    ocean = ocean_src.read(1)
+    ocean = np.where(ocean == ocean_src.nodata, 0, ocean).astype(np.uint8)
+
+# -----------------------------
+# data set check
+# -----------------------------
+if (ocean.shape != dem.shape) or (ocean_src.transform != transform):
+    raise ValueError("Ocean mask와 DEM 정렬 불일치")
+
+# -----------------------------
+# connection structure
+# -----------------------------
+structure = np.array([[1,1,1],
+                      [1,1,1],
+                      [1,1,1]], dtype=np.uint8)
+
+results = []
+extent_stack = []
+
+# -----------------------------
+# 시scenario
+# -----------------------------
+for name, dh in SCENARIOS.items():
+    water_level = BASE_WATER_LEVEL + dh
+
+    # 1) 침수 영역
+    inund = (dem <= water_level)
+    inund = np.nan_to_num(inund, nan=False).astype(np.uint8)
+
+    # 2) ocean-connected 필터
+    labeled, _ = label(inund, structure=structure)
+    ocean_labels = np.unique(labeled[(ocean == 1) & (labeled > 0)])
+    connected = np.isin(labeled, ocean_labels).astype(np.uint8)
+
+    # 3) 수심 계산
+    depth = np.zeros_like(dem, dtype=np.float32)
+    d = (water_level - dem)
+    d = np.nan_to_num(d, nan=0.0)
+
+    depth[connected == 1] = d[connected == 1]
+    depth[depth < 0] = 0.0
+    depth = np.clip(depth, 0, MAX_DEPTH)
+
+    # 4) GeoTIFF 저장
+    out_extent = f"{OUT_PREFIX}_{name}_extent.tif"
+    out_depth = f"{OUT_PREFIX}_{name}_depth.tif"
+
+    write_raster(out_extent, connected, dem_profile, "uint8")
+    write_raster(out_depth, depth, dem_profile, "float32")
+
+    # 5) PNG 
+    save_png(
+        connected,
+        f"Inundation Extent ({name})",
+        f"{OUT_PREFIX}_{name}_extent.png",
+        cmap="Blues",
+        vmin=0,
+        vmax=1,
+        label="Flooded (1) / Not flooded (0)"
+    )
+
+    save_png(
+        depth,
+        f"Inundation Depth ({name})",
+        f"{OUT_PREFIX}_{name}_depth.png",
+        cmap="Reds",
+        vmin=0,
+        vmax=MAX_DEPTH,
+        label="Water Depth (m)"
+    )
+
+    extent_stack.append(connected)
+
+    # 6) 면적 계산
+    inund_area = connected.sum() * pixel_area
+    results.append((name, water_level, inund_area))
+
+    # 7) 폴리곤 변환
+    geoms = []
+    for geom, val in shapes(connected, mask=(connected == 1), transform=transform):
+        if val == 1:
+            geoms.append(shape(geom))
+
+    if geoms:
+        gdf = gpd.GeoDataFrame({"scenario":[name]*len(geoms)}, geometry=geoms, crs=crs)
+        gdf = gdf.dissolve(by="scenario").reset_index()
+        gdf.to_file(f"{OUT_PREFIX}_{name}_extent.geojson", driver="GeoJSON")
+
+# -----------------------------
+# 8) flood frequency
+# -----------------------------
+frequency = np.sum(extent_stack, axis=0)
+
+write_raster(f"{OUT_PREFIX}_frequency.tif", frequency, dem_profile, "uint8")
+
+save_png(
+    frequency,
+    "Flood Frequency",
+    f"{OUT_PREFIX}_frequency.png",
+    cmap="Purples",
+    vmin=0,
+    vmax=len(SCENARIOS),
+    label="Flood Frequency"
+)
+
+# -----------------------------
+# 9) range
+# -----------------------------
+for i in range(1, len(extent_stack)):
+    diff = extent_stack[i] - extent_stack[i-1]
+
+    write_raster(f"{OUT_PREFIX}_diff_{i}.tif", diff, dem_profile, "int8")
+
+    save_png(
+        diff,
+        f"Flood Expansion {i}",
+        f"{OUT_PREFIX}_diff_{i}.png",
+        cmap="coolwarm",
+        vmin=-1,
+        vmax=1,
+        label="Change (-1: decrease, +1: increase)"
+    )
+
+# -----------------------------
+# result
+# -----------------------------
+print("=== 침수 면적 결과 ===")
+for name, wl, area in results:
+    print(f"{name}: water_level={wl:.2f} m → area={area:,.0f} m²")
