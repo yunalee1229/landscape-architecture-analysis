@@ -1,0 +1,142 @@
+import numpy as np
+import rasterio
+import matplotlib.pyplot as plt
+
+# ---------------------------------
+# 1. path
+# ---------------------------------
+DEM_PATH = "C:/Users/twins/OneDrive/문서/바탕 화면/26-1/asla/sin_site4.tif"
+PORT_MASK_PATH = "C:/Users/twins/OneDrive/문서/바탕 화면/26-1/asla/sin_port.tif"
+
+OUT_PREFIX = "C:/Users/twins/OneDrive/문서/바탕 화면/26-1/asla/result5_FINAL_REAL"
+
+
+# ---------------------------------
+# 2. load
+# ---------------------------------
+with rasterio.open(DEM_PATH) as src:
+    dem = src.read(1).astype(np.float32)
+    profile = src.profile
+    nodata = src.nodata
+    transform = src.transform
+
+with rasterio.open(PORT_MASK_PATH) as src:
+    port = src.read(
+        1,
+        out_shape=dem.shape,
+        resampling=rasterio.enums.Resampling.nearest
+    ).astype(np.uint8)
+
+# ---------------------------------
+# 3. nodata 처리
+# ---------------------------------
+if nodata is not None:
+    dem = np.where(dem == nodata, np.nan, dem)
+
+# ---------------------------------
+# 4. DEM 수정
+# ---------------------------------
+PORT_RAISING = 5.0  # 항만 지반 상승 (m)
+
+dem_mod = dem.copy()
+dem_mod[port == 1] += PORT_RAISING
+
+# ---------------------------------
+# 5. 수위
+# ---------------------------------
+BASE = 2.5
+
+SCENARIOS = {
+    "100yr": 1.0,
+    "150yr": 2.0,
+    "200yr": 3.0
+}
+
+MAX_DEPTH = 5.0
+
+# ---------------------------------
+# 6. 셀 면적 계산 (m²)
+# ---------------------------------
+pixel_width = transform[0]
+pixel_height = abs(transform[4])
+cell_area = pixel_width * pixel_height
+
+print(f"셀 면적: {cell_area:.2f} m²")
+
+# ---------------------------------
+# 7. 저장 함수
+# ---------------------------------
+def write(path, arr):
+    prof = profile.copy()
+    prof.update(dtype=rasterio.float32, count=1, nodata=-9999)
+
+    out = np.where(np.isnan(arr), -9999, arr)
+
+    with rasterio.open(path, "w", **prof) as dst:
+        dst.write(out.astype(np.float32), 1)
+
+# ---------------------------------
+# 8. 시뮬레이션
+# ---------------------------------
+extent_stack = []
+
+for name, wl in SCENARIOS.items():
+    water_level = BASE + wl
+
+    flooded = (dem_mod < water_level)
+
+    depth = np.where(flooded, water_level - dem_mod, np.nan)
+    depth = np.clip(depth, 0, MAX_DEPTH)
+
+    extent = flooded.astype(np.uint8)
+    extent_stack.append(extent)
+
+    # ---------------------------------
+    # 침수 면적 계산
+    # ---------------------------------
+    flooded_pixels = np.sum(extent == 1)
+    flooded_area_m2 = flooded_pixels * cell_area
+    flooded_area_km2 = flooded_area_m2 / 1e6
+
+    print(f"{name} 침수면적: {flooded_area_km2:.2f} km²")
+
+    # 저장
+    write(f"{OUT_PREFIX}_{name}_depth.tif", depth)
+    write(f"{OUT_PREFIX}_{name}_extent.tif", extent)
+
+    # depth 시각화
+    plt.figure(figsize=(6,6))
+    plt.imshow(depth, cmap="Reds", vmin=0, vmax=MAX_DEPTH)
+    plt.title(f"Inundation Depth ({name})")
+    plt.colorbar(label="Water Depth (m)")
+    plt.axis("off")
+    plt.savefig(f"{OUT_PREFIX}_{name}_depth.png", dpi=300)
+    plt.close()
+
+    # extent 시각화
+    plt.figure(figsize=(6,6))
+    plt.imshow(extent, cmap="Blues")
+    plt.title(f"Inundation Extent ({name})")
+    plt.colorbar(label="Flooded (1)")
+    plt.axis("off")
+    plt.savefig(f"{OUT_PREFIX}_{name}_extent.png", dpi=300)
+    plt.close()
+
+# ---------------------------------
+# 9. frequency
+# ---------------------------------
+extent_stack = np.array(extent_stack)
+freq = np.sum(extent_stack, axis=0)
+
+write(f"{OUT_PREFIX}_frequency.tif", freq)
+
+plt.imshow(freq, cmap="Purples")
+plt.title("Flood Frequency")
+plt.colorbar()
+plt.savefig(f"{OUT_PREFIX}_frequency.png", dpi=300)
+plt.close()
+
+print("완료")
+
+print("pixel width:", pixel_width)
+print("pixel height:", pixel_height)
