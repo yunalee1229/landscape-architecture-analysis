@@ -19,10 +19,12 @@ for f in files:
 df = pd.concat(df_list, ignore_index=True)
 
 df.columns = ['ID', 'Station', 'Year', 'Lon', 'Lat', 'Level', 'Temp', 'DO', 'BOD', 'COD', 'SS', 'TN', 'TP', 'Chla', 'Flow']
-cols_to_fix = ['Temp', 'BOD', 'TP', 'Chla', 'Flow']
+
+cols_for_analysis = ['Temp', 'BOD', 'COD', 'TN', 'TP', 'Chla']
 
 target = df[df['Station'].str.contains('강정', na=False)].copy()
-for col in cols_to_fix:
+
+for col in cols_for_analysis:
     target[col] = pd.to_numeric(target[col], errors='coerce')
 
 target = target.dropna(subset=['Year', 'BOD', 'Chla'])
@@ -32,7 +34,6 @@ yearly_avg = target.groupby('Year').mean(numeric_only=True).reset_index()
 
 # graph 1
 fig, ax1 = plt.subplots(figsize=(12, 6))
-
 ax1.plot(yearly_avg['Year'], yearly_avg['BOD'], color='#004c99', marker='o', linewidth=2, label='BOD (수질 개선 지표)')
 ax1.set_xlabel('연도', fontsize=12)
 ax1.set_ylabel('BOD (mg/L)', color='#004c99', fontsize=12)
@@ -53,14 +54,14 @@ plt.show()
 
 # graph 2
 plt.figure(figsize=(10, 8))
-corr_matrix = target[cols_to_fix].corr()
+
+corr_matrix = target[cols_for_analysis].corr()
 sns.heatmap(corr_matrix, annot=True, cmap='RdBu_r', center=0, fmt='.2f', linewidths=0.5)
-plt.title('수질 및 유량 변수 간 상관관계 분석', fontsize=14, pad=20)
+plt.title('주요 수질 변수 간 상관관계 분석', fontsize=14, pad=20)
 plt.show()
 
 # graph 3
 plt.figure(figsize=(12, 6))
-
 sns.stripplot(data=target, x='Year', y='Chla', color='#004c99', alpha=0.6, jitter=0.2)
 plt.plot(range(len(yearly_avg['Year'])), yearly_avg['Chla'], color='red', marker='o', linewidth=2, label='연도별 평균 추세')
 
