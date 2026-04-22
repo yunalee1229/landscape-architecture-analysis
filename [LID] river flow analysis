@@ -1,0 +1,74 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+
+plt.rcParams['font.family'] = 'Malgun Gothic'
+plt.rcParams['axes.unicode_minus'] = False 
+
+files = ['C:/Users/twins/OneDrive/문서/바탕 화면/26-1/저영향/sub5/dt1.csv', 
+         'C:/Users/twins/OneDrive/문서/바탕 화면/26-1/저영향/sub5/dt2.csv', 
+         'C:/Users/twins/OneDrive/문서/바탕 화면/26-1/저영향/sub5/dt3.csv', 
+         'C:/Users/twins/OneDrive/문서/바탕 화면/26-1/저영향/sub5/dt4.csv']
+df_list = []
+for f in files:
+    try:
+        df_list.append(pd.read_csv(f, encoding='cp949'))
+    except:
+        df_list.append(pd.read_csv(f, encoding='utf-8-sig'))
+df = pd.concat(df_list, ignore_index=True)
+
+df.columns = ['ID', 'Station', 'Year', 'Lon', 'Lat', 'Level', 'Temp', 'DO', 'BOD', 'COD', 'SS', 'TN', 'TP', 'Chla', 'Flow']
+cols_to_fix = ['Temp', 'BOD', 'TP', 'Chla', 'Flow']
+
+target = df[df['Station'].str.contains('강정', na=False)].copy()
+for col in cols_to_fix:
+    target[col] = pd.to_numeric(target[col], errors='coerce')
+
+target = target.dropna(subset=['Year', 'BOD', 'Chla'])
+target['Year'] = target['Year'].astype(int)
+
+yearly_avg = target.groupby('Year').mean(numeric_only=True).reset_index()
+
+# graph 1
+fig, ax1 = plt.subplots(figsize=(12, 6))
+
+ax1.plot(yearly_avg['Year'], yearly_avg['BOD'], color='#004c99', marker='o', linewidth=2, label='BOD (수질 개선 지표)')
+ax1.set_xlabel('연도', fontsize=12)
+ax1.set_ylabel('BOD (mg/L)', color='#004c99', fontsize=12)
+ax1.tick_params(axis='y', labelcolor='#004c99')
+
+ax2 = ax1.twinx()
+ax2.plot(yearly_avg['Year'], yearly_avg['Chla'], color='#cc0000', marker='s', linewidth=2, label='Chl-a (녹조 발생 지표)')
+ax2.set_ylabel('클로로필 a (mg/m³)', color='#cc0000', fontsize=12)
+ax2.tick_params(axis='y', labelcolor='#cc0000')
+
+plt.title('4대강 사업 전후 수질 역설 분석: BOD 개선 대비 녹조(Chl-a) 증가', fontsize=15, pad=20)
+ax1.grid(True, axis='y', linestyle='--', alpha=0.3)
+lines, labels = ax1.get_legend_handles_labels()
+lines2, labels2 = ax2.get_legend_handles_labels()
+ax1.legend(lines + lines2, labels + labels2, loc='upper left')
+plt.tight_layout()
+plt.show()
+
+# graph 2
+plt.figure(figsize=(10, 8))
+corr_matrix = target[cols_to_fix].corr()
+sns.heatmap(corr_matrix, annot=True, cmap='RdBu_r', center=0, fmt='.2f', linewidths=0.5)
+plt.title('수질 및 유량 변수 간 상관관계 분석', fontsize=14, pad=20)
+plt.show()
+
+# graph 3
+plt.figure(figsize=(12, 6))
+
+sns.stripplot(data=target, x='Year', y='Chla', color='#004c99', alpha=0.6, jitter=0.2)
+plt.plot(range(len(yearly_avg['Year'])), yearly_avg['Chla'], color='red', marker='o', linewidth=2, label='연도별 평균 추세')
+
+plt.title('연도별 클로로필 a 농도 분포 및 변동성 확인', fontsize=14)
+plt.xlabel('연도')
+plt.ylabel('클로로필 a (mg/m³)')
+plt.xticks(rotation=45)
+plt.legend()
+plt.grid(axis='y', linestyle='--', alpha=0.3)
+plt.tight_layout()
+plt.show()
